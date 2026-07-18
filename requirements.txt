@@ -1,0 +1,9 @@
+# GPU文字起こし
+faster-whisper>=1.0
+numpy>=1.24
+
+# CUDA ランタイム（NVIDIA GPU用。cublas64_12.dll不足でGPUが落ちるため必須）
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+
+# ※ ffmpeg / ffprobe はPythonパッケージではないので別途システムにインストールすること

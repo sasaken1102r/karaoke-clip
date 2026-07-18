@@ -1,0 +1,54 @@
+---
+name: karaoke-clip
+description: スマホ等で録音したカラオケ音声(長時間・複数曲)から、歌った曲を1曲ずつ自動で切り抜く。区間検出→整音→GPU文字起こし→歌詞から曲名特定→「曲名＋日付＋歌唱開始時刻」で命名。会話・無音は除外、伴奏アウトロは残す。ファイル作成日時を歌唱時刻に設定して時系列ソート可。Triggers: カラオケ 切り抜き, カラオケ 曲ごと 分割, karaoke clip split, 歌ってみた 録音 分割, カラオケ音声 曲名特定, 録音した歌 1曲ずつ, setlist 切り出し
+---
+
+# カラオケ切り抜きスキル
+
+長時間のカラオケ録音(1ファイルに数十曲)を、**曲ごとに切り分けて整音し、曲名を特定して命名**する。実運用で確立した手順とパラメータ（`references/recipe.md` に詳細とNG集）。
+
+## 前提環境
+- **ffmpeg / ffprobe**（PATH）
+- **Python**（numpy）。Windowsは `$env:PYTHONUTF8=1` / `python -X utf8`
+- **GPU文字起こし**: `faster-whisper`（+ `nvidia-cublas-cu12` `nvidia-cudnn-cu12`）。`scripts/transcribe.py` が先頭でDLL登録する。RTX系で1曲数十秒。
+- Windowsでは日本語ファイル名の扱いに注意。PowerShell出力は信用せず、結果はファイルに書いて Read で確認する（`references/recipe.md` の運用注意参照）。
+
+## ワークフロー（この順で進める）
+
+### 1. 素材確認
+入力音声(aac/m4a/wav等)の一覧・長さ・録音開始時刻を確認。録音開始時刻は**ファイル名やタイムスタンプ**から得る（命名の基準になる）。
+
+### 2. 区間検出
+`python scripts/detect_songs.py <入力音声> <out_segments.json>`
+→ 16kHz mono化して1秒RMS(dB)の9秒移動平均で曲/非曲を判定、無音まで境界拡張。`[{idx,start,end,dur}]` を出力。
+**検証**: 既知の1曲があればその時刻と照合。長すぎる区間(>7分)は**2曲マージ**を疑う（後述の分割）。
+
+### 3. 声強調抽出＋文字起こし（GPU）
+各区間を声強調(`highpass=f=120,loudnorm`)で16k mono抽出 →
+`python scripts/transcribe.py <segwav_dir> <lyrics_out_dir>`
+→ 各区間の歌詞テキスト＋`ALL_SUMMARY.txt`。**プロンプト無し・VAD無し・no_speech過剰フィルタ無し**（recipe参照。ここを間違えると幻覚/歌詞消失）。
+
+### 4. 曲名特定
+歌詞の**特徴フレーズをWeb検索**（日本語で／歌ネット・うたてん・JOYSOUND等）。荒い区間はユーザーに原音の位置(mm:ss)を伝えて聴いてもらう＝最確。ユーザーは❓一覧に**在順で回答**することが多い。別フレーズで再検索すると出ることが多い。
+
+### 5. 切出し・整音・命名
+`python scripts/process.py <入力音声> <segments.json> <names.json> <out_dir> <録音開始秒> <YYYY-MM-DD>`
+→ 各区間を**整音チェーン(M1)・無フェード**で切出し、`{曲名}_{日付}_{歌唱開始HH-MM}.m4a` で出力（metadata title付与）。歌唱開始=録音開始時刻+区間開始オフセット。
+
+### 6. ファイル作成日時=歌唱時刻に設定（時系列ソート用）
+`scripts/set_dates.ps1`（またはPowerShellで各ファイルの CreationTime/LastWriteTime を 日付+HH:MM に設定）。これで日付順ソート=setlist順に並ぶ。
+
+### 7. 境界の仕上げ（重要）
+- **曲の終端**=「歌い終わり」でなく「**伴奏(低音60-250Hz)が急落→無音になる点=終止**」で切る。歌後の伴奏アウトロは残す。会話は"伴奏が終わった後"のものだけ切る。
+- **2曲マージの分割**: `python scripts/boundary_probe.py <wav16k> <開始秒> <終了秒>` で内部の無音ギャップ(=曲の切れ目)を検出。各パートを個別に切出し。
+- 会話が伴奏に被る場合など、迷う境界は**ユーザーに原音を聴いてもらい秒で指定**してもらうのが最確。
+
+## 整音チェーン(M1・確定)
+```
+highpass=f=40, afftdn=nr=6:nf=-30, treble=g=6:f=3200, treble=g=4:f=9000,
+volume=<+Ndb 目標-16LUFS>, alimiter=level_in=1:level_out=1:limit=0.85:attack=5:release=60
+```
+出力 `-c:a aac -b:a 256k -ar 48000 -ac 2`。**フェード無し(ハード切り)**。※詳細/NG集は `references/recipe.md` 必読（loudnorm厳禁・強denoise厳禁など）。
+
+## ユーザーの好み（デフォルト）
+声は鮮明優先（強いノイズ除去NG）。フェード完全ゼロ。伴奏アウトロは終止まで残す／歌後の会話だけ切る。日時入り命名を好む。日本語・タメ口で対応。

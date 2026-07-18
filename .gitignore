@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 生成物・作業ファイル（スクリプトの出力）
+*.wav
+*.m4a
+*.aac
+*_16k.wav
+segments*.json
+names*.json
+lyrics*/
+lyrics_out/
+_segwav/
+切り抜き/
+scratch/
+scratchpad/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
